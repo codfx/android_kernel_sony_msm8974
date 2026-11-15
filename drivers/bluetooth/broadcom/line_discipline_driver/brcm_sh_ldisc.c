@@ -1882,6 +1882,7 @@ long brcm_sh_ldisc_write(struct sk_buff *skb)
     long len;
     struct brcm_struct *brcm;
     char ptr[MAX_HCI_EVENT_LEN + 2] = {0};
+    struct sk_buff *rsp;
     int hci_response_data_len = 4;
     int hci_response_len = hci_response_data_len + 2; // (+ add. header bytes)
 
@@ -1953,13 +1954,20 @@ long brcm_sh_ldisc_write(struct sk_buff *skb)
                 hci_response_len += READ_CMD_DATA_LEN;
             }
 
-            brcm->rx_skb = alloc_skb(HCI_MAX_FRAME_SIZE, GFP_ATOMIC);
-            if(brcm->rx_skb) {
-                skb_reserve(brcm->rx_skb, hci_response_len + 2);
+            /* Build the fake response in a local skb: brcm->rx_skb belongs to
+             * the receive state machine. brcm_hci_uart_route_frame() hands
+             * the skb to the protocol stack, which frees it, so keeping it in
+             * brcm->rx_skb left a dangling pointer that brcm_close() freed a
+             * second time (slab corruption / random panics when BT shuts down). */
+            rsp = alloc_skb(HCI_MAX_FRAME_SIZE, GFP_ATOMIC);
+            if (unlikely(!rsp)) {
+                BT_LDISC_ERR("failed to allocate fake HCI response");
+                return -ENOMEM;
             }
+            skb_reserve(rsp, hci_response_len + 2);
 
-            brcm->rx_skb->dev = (void *) hu->hdev;
-            sh_ldisc_cb(brcm->rx_skb)->pkt_type = HCI_EVENT_PKT;
+            rsp->dev = (void *) hu->hdev;
+            sh_ldisc_cb(rsp)->pkt_type = HCI_EVENT_PKT;
 
             // Build the response: event header + command
             ptr[0] = 0x0e;
@@ -1968,10 +1976,10 @@ long brcm_sh_ldisc_write(struct sk_buff *skb)
             ptr[3] = (skb->data)[1];
             ptr[4] = (skb->data)[2];
 
-            memcpy(skb_put(brcm->rx_skb, hci_response_len), ptr, hci_response_len);
+            memcpy(skb_put(rsp, hci_response_len), ptr, hci_response_len);
 
-            brcm_hci_process_frametype(HCI_EVENT_PKT,hu,brcm->rx_skb, hci_response_len);
-            brcm_hci_uart_route_frame(PROTO_SH_BT, hu, brcm->rx_skb);
+            brcm_hci_process_frametype(HCI_EVENT_PKT, hu, rsp, hci_response_len);
+            brcm_hci_uart_route_frame(PROTO_SH_BT, hu, rsp);
         }
     }
     else
