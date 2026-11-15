@@ -245,6 +245,7 @@ static void brcm_bt_drv_prepare(struct brcm_bt_dev* bt_dev)
     /* Initialize RX Queue and RX tasklet */
     skb_queue_head_init(&bt_dev->rx_q);
     spin_lock_init(&bt_dev->rx_q_lock);
+    bt_dev->rx_read_offset = 0;
 
     atomic_set(&bt_dev->tx_cnt, 0);
 
@@ -279,6 +280,7 @@ static int brcm_bt_drv_reset_queue(struct sk_buff_head *list)
 static int brcm_bt_drv_close(struct inode *i, struct file *f)
 {
     int err=0;
+    unsigned long flags;
     struct brcm_bt_dev *bt_dev_p = f->private_data;
 
 #ifndef TASKLET_SUPPORT
@@ -303,7 +305,13 @@ static int brcm_bt_drv_close(struct inode *i, struct file *f)
      * serial node (e.g., the msm one). The actual base problem is that a shared
      * sk buffer should be used... */
     brcm_bt_drv_reset_queue(&bt_dev_p->tx_q);
+    spin_lock_irqsave(&bt_dev_p->rx_q_lock, flags);
     brcm_bt_drv_reset_queue(&bt_dev_p->rx_q);
+    /* A reader closed mid-packet (e.g. the H4 HAL after reading only the
+     * packet type byte) must not leave an offset behind: the next opener
+     * would start reading in the middle of its first packet. */
+    bt_dev_p->rx_read_offset = 0;
+    spin_unlock_irqrestore(&bt_dev_p->rx_q_lock, flags);
     atomic_set(&bt_dev_p->tx_cnt, 0);
     bt_dev_p->st_write = NULL;
 
@@ -336,8 +344,6 @@ static ssize_t brcm_bt_drv_read(struct file *f, char __user *buf, size_t
     struct brcm_bt_dev *bt_dev_p = f->private_data;
     size_t skb_size = 0;
     size_t skb_remaining_len = 0;
-     /* Last read pos if only a fragment was read previously.*/
-    static size_t skb_read_offset;
     unsigned long flags;
 
     spin_lock_irqsave(&bt_dev_p->rx_q_lock, flags);
@@ -354,18 +360,18 @@ static ssize_t brcm_bt_drv_read(struct file *f, char __user *buf, size_t
     else {
         /* Read only len bytes, if the the remaining bytes of the packet are
          * less, only read them. */
-        skb_remaining_len = skb->len - skb_read_offset;
+        skb_remaining_len = skb->len - bt_dev_p->rx_read_offset;
         skb_size = (len <= skb_remaining_len) ? len : skb_remaining_len;
 
          /* copy packet to user-space */
-        if(0 == copy_to_user(buf, skb->data + skb_read_offset, sizeof(char) * skb_size)){
+        if(0 == copy_to_user(buf, skb->data + bt_dev_p->rx_read_offset, sizeof(char) * skb_size)){
             /* Copy success. */
             if(skb_size < skb_remaining_len) {
                 /* Remaining bytes after read --> increase offset for next read.*/
-                skb_read_offset += skb_size;
+                bt_dev_p->rx_read_offset += skb_size;
             } else if(skb_size == skb_remaining_len) {
                 /* All bytes of packet read --> dequeue & reset offset. */
-                skb_read_offset = 0;
+                bt_dev_p->rx_read_offset = 0;
                 skb = skb_dequeue(&bt_dev_p->rx_q);
                 kfree_skb(skb);
             } else {
@@ -385,7 +391,7 @@ exit:
     BT_DRV_DBG(V4L2_DBG_RX, "skb_size=%d", skb_size);
     return skb_size;
 err:
-    skb_read_offset = 0;
+    bt_dev_p->rx_read_offset = 0;
     spin_unlock_irqrestore(&bt_dev_p->rx_q_lock, flags);
     return -EFAULT;
 }

@@ -74,6 +74,9 @@ struct brcm_bt_dev {
     long flag;                           /*  BT driver state machine info */
     struct sk_buff_head rx_q;            /* RX queue */
     spinlock_t rx_q_lock;                /* Rx queue lock */
+    size_t rx_read_offset;               /* bytes of the head rx_q skb already
+                                          * read by user space (partial reads);
+                                          * protected by rx_q_lock */
 
     struct sk_buff_head tx_q;            /* TX queue */
 #ifdef TASKLET_SUPPORT
