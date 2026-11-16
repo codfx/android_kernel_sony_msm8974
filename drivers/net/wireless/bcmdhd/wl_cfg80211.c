@@ -7502,10 +7502,15 @@ wl_cfg80211_sched_scan_start(struct wiphy *wiphy,
 				ssids_local[ssid_cnt].hidden = FALSE;
 				WL_PNO((">>> PNO non-hidden SSID (%s) \n", ssid->ssid));
 			}
+#ifdef NL80211_SCAN_RSSI_THOLD_OFF
+			/* Per-match-set RSSI thresholds don't exist in older cfg80211
+			 * (e.g. 3.4); ssids_local is zeroed, so no threshold there.
+			 */
 			if (request->match_sets[i].rssi_thold != NL80211_SCAN_RSSI_THOLD_OFF) {
 				ssids_local[ssid_cnt].rssi_thresh =
 				      (int8)request->match_sets[i].rssi_thold;
 			}
+#endif /* NL80211_SCAN_RSSI_THOLD_OFF */
 			ssid_cnt++;
 		}
 	}
