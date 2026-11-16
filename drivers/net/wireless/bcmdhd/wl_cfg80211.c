@@ -9850,7 +9850,9 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	int channel_req = 0;
 	int band = 0;
 	struct wl_pfn_scanresults *pfn_result = (struct wl_pfn_scanresults *)data;
-	int n_pfn_results = pfn_result->count;
+	u32 datalen = ntoh32(e->datalen);
+	u32 hdr_len, max_results;
+	int n_pfn_results;
 	log_conn_event_t *event_data = NULL;
 	tlv_log *tlv_data = NULL;
 	u32 alloc_len;
@@ -9858,6 +9860,11 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 
 	WL_DBG(("Enter\n"));
 
+	/* version, status and count must be present before anything is read */
+	if (datalen < offsetof(wl_pfn_scanresults_t, scan_ch_bucket)) {
+		WL_ERR(("PFN event too short: %u bytes\n", datalen));
+		return BCME_BADLEN;
+	}
 	if (pfn_result->version != PFN_SCANRESULT_VERSION &&
 	    pfn_result->version != PFN_SCANRESULTS_VERSION_V1) {
 		WL_ERR(("Incorrect version %d expected %d or %d\n",
@@ -9865,22 +9872,32 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 		       PFN_SCANRESULTS_VERSION_V1));
 		return BCME_VERSION;
 	}
-	if (e->event_type == WLC_E_PFN_NET_LOST) {
+	if (ntoh32(e->event_type) == WLC_E_PFN_NET_LOST) {
 		WL_PNO(("PFN NET LOST event. Do Nothing \n"));
 		return 0;
 	}
+	/* netinfo[] offset depends on the version; never trust 'count' beyond datalen */
+	hdr_len = (pfn_result->version == PFN_SCANRESULTS_VERSION_V1) ?
+		offsetof(wl_pfn_scanresults_t, scan_ch_bucket) :
+		offsetof(wl_pfn_scanresults_t, netinfo);
+	if (datalen < hdr_len) {
+		WL_ERR(("PFN event too short for version %u: %u bytes\n",
+			pfn_result->version, datalen));
+		return BCME_BADLEN;
+	}
+	max_results = (datalen - hdr_len) / sizeof(wl_pfn_net_info_t);
+	if (pfn_result->count > max_results) {
+		WL_ERR(("PFN event count %u exceeds data length %u (max %u)\n",
+			pfn_result->count, datalen, max_results));
+	}
+	n_pfn_results = (int)MIN(pfn_result->count, max_results);
 	WL_PNO((">>> PFN NET FOUND event. count:%d \n", n_pfn_results));
 	if (n_pfn_results > 0) {
 		int i;
 
 		if (n_pfn_results > MAX_PFN_LIST_COUNT)
 			n_pfn_results = MAX_PFN_LIST_COUNT;
-		if (pfn_result->version == PFN_SCANRESULTS_VERSION_V1)
-			pnetinfo = (wl_pfn_net_info_t *)((u8 *)data +
-				offsetof(wl_pfn_scanresults_t, scan_ch_bucket));
-		else
-			pnetinfo = (wl_pfn_net_info_t *)(data + sizeof(wl_pfn_scanresults_t)
-				- sizeof(wl_pfn_net_info_t));
+		pnetinfo = (wl_pfn_net_info_t *)((u8 *)data + hdr_len);
 
 		memset(&ssid, 0x00, sizeof(ssid));
 
@@ -9917,7 +9934,9 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 				err = -EINVAL;
 				goto out_err;
 			}
-			printk(">>> SSID:%s Channel:%d \n",
+			/* SSID[] is not NUL-terminated */
+			printk(">>> SSID:%.*s Channel:%d \n",
+				(int)MIN(DOT11_MAX_SSID_LEN, netinfo->pfnsubnet.SSID_len),
 				netinfo->pfnsubnet.u.SSID, netinfo->pfnsubnet.channel);
 			/* PFN result doesn't have all the info which are required by the supplicant
 			 * (For e.g IEs) Do a target Escan so that sched scan results are reported
