@@ -9831,6 +9831,11 @@ exit:
  * full escan
  */
 #define FULL_ESCAN_ON_PFN_NET_FOUND		0
+/* Older firmware (e.g. the shinano BCM4354 one) reports PFN scan results in the
+ * version 1 layout, which lacks the scan_ch_bucket field: netinfo[] starts right
+ * after 'count'. The net_info entries are the same in both versions.
+ */
+#define PFN_SCANRESULTS_VERSION_V1		1
 static s32
 wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	const wl_event_msg_t *e, void *data)
@@ -9853,9 +9858,11 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 
 	WL_DBG(("Enter\n"));
 
-	if (pfn_result->version != PFN_SCANRESULT_VERSION) {
-		WL_ERR(("Incorrect version %d expected %d\n",
-		       pfn_result->version, PFN_SCANRESULT_VERSION));
+	if (pfn_result->version != PFN_SCANRESULT_VERSION &&
+	    pfn_result->version != PFN_SCANRESULTS_VERSION_V1) {
+		WL_ERR(("Incorrect version %d expected %d or %d\n",
+		       pfn_result->version, PFN_SCANRESULT_VERSION,
+		       PFN_SCANRESULTS_VERSION_V1));
 		return BCME_VERSION;
 	}
 	if (e->event_type == WLC_E_PFN_NET_LOST) {
@@ -9868,7 +9875,11 @@ wl_notify_sched_scan_results(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 
 		if (n_pfn_results > MAX_PFN_LIST_COUNT)
 			n_pfn_results = MAX_PFN_LIST_COUNT;
-		pnetinfo = (wl_pfn_net_info_t *)(data + sizeof(wl_pfn_scanresults_t)
+		if (pfn_result->version == PFN_SCANRESULTS_VERSION_V1)
+			pnetinfo = (wl_pfn_net_info_t *)((u8 *)data +
+				offsetof(wl_pfn_scanresults_t, scan_ch_bucket));
+		else
+			pnetinfo = (wl_pfn_net_info_t *)(data + sizeof(wl_pfn_scanresults_t)
 				- sizeof(wl_pfn_net_info_t));
 
 		memset(&ssid, 0x00, sizeof(ssid));
