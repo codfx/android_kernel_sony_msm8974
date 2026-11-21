@@ -564,7 +564,13 @@ uint dhd_pkt_filter_init = 0;
 module_param(dhd_pkt_filter_init, uint, 0);
 
 /* Pkt filter mode control */
-uint dhd_master_mode = TRUE;
+/* Suspend packet filters run in "discard on match" mode (pkt_filter_mode 0): a frame is dropped
+ * in the firmware when it matches one of the filters set up in dhd_preinit_ioctls(), everything
+ * else is passed to the host. "Forward on match" with a unicast filter is not enough when the
+ * access point converts multicast to unicast: mDNS/SSDP from other hosts then arrives as unicast
+ * and wakes the host every second or two.
+ */
+uint dhd_master_mode = FALSE;
 module_param(dhd_master_mode, uint, 0);
 
 int dhd_watchdog_prio = 0;
@@ -1448,9 +1454,12 @@ void dhd_enable_packet_filter(int value, dhd_pub_t *dhd)
 	    {
 		for (i = 0; i < dhd->pktfilter_count; i++) {
 #ifndef GAN_LITE_NAT_KEEPALIVE_FILTER
-			if (value && (i == DHD_ARP_FILTER_NUM) &&
-				!_turn_on_arp_filter(dhd, dhd->op_mode)) {
-				DHD_TRACE(("Do not turn on ARP white list pkt filter:"
+			/* IBSS and P2P need broadcast ARP on the host: do not discard
+			 * broadcast/multicast there (the port filters still apply).
+			 */
+			if (value && (i == DHD_UNICAST_FILTER_NUM) &&
+				_turn_on_arp_filter(dhd, dhd->op_mode)) {
+				DHD_TRACE(("Do not turn on the broadcast/multicast discard filter:"
 					"val %d, cnt %d, op_mode 0x%x\n",
 					value, i, dhd->op_mode));
 				continue;
@@ -6190,15 +6199,34 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 
 #ifdef PKT_FILTER_SUPPORT
 	/* Setup default defintions for pktfilter , enable in suspend */
-	dhd->pktfilter_count = 6;
-	/* Setup filter to allow only unicast */
-	dhd->pktfilter[DHD_UNICAST_FILTER_NUM] = "100 0 0 0 0x01 0x00";
+	dhd->pktfilter_count = 10;
+	/* Discard frames with the group bit set (broadcast and multicast): only unicast is
+	 * passed up, as before.
+	 */
+	dhd->pktfilter[DHD_UNICAST_FILTER_NUM] = "100 0 0 0 0x01 0x01";
 	dhd->pktfilter[DHD_BROADCAST_FILTER_NUM] = NULL;
 	dhd->pktfilter[DHD_MULTICAST4_FILTER_NUM] = NULL;
 	dhd->pktfilter[DHD_MULTICAST6_FILTER_NUM] = NULL;
 	dhd->pktfilter[DHD_MDNS_FILTER_NUM] = NULL;
-	/* apply APP pktfilter */
-	dhd->pktfilter[DHD_ARP_FILTER_NUM] = "105 0 0 12 0xFFFF 0x0806";
+	/* No ARP filter in discard mode: see dhd_enable_packet_filter() for the modes that need
+	 * broadcast ARP on the host.
+	 */
+	dhd->pktfilter[DHD_ARP_FILTER_NUM] = NULL;
+	/* Discard service discovery chatter by destination port, also when it arrives as unicast.
+	 * Offset 12: ethertype, (IPv4: version/IHL 0x45,) protocol UDP, UDP destination port.
+	 */
+	/* IPv4 UDP dst port 5353 (mDNS) */
+	dhd->pktfilter[DHD_MDNS4_DROP_FILTER_NUM] =
+		"106 0 0 12 0xffffff0000000000000000ff000000000000000000000000ffff 0x08004500000000000000001100000000000000000000000014e9";
+	/* IPv6 UDP dst port 5353 (mDNS) */
+	dhd->pktfilter[DHD_MDNS6_DROP_FILTER_NUM] =
+		"107 0 0 12 0xffff000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000ffff 0x86dd00000000000011000000000000000000000000000000000000000000000000000000000000000000000014e9";
+	/* IPv4 UDP dst port 1900 (SSDP) */
+	dhd->pktfilter[DHD_SSDP4_DROP_FILTER_NUM] =
+		"108 0 0 12 0xffffff0000000000000000ff000000000000000000000000ffff 0x080045000000000000000011000000000000000000000000076c";
+	/* IPv6 UDP dst port 1900 (SSDP) */
+	dhd->pktfilter[DHD_SSDP6_DROP_FILTER_NUM] =
+		"109 0 0 12 0xffff000000000000ff0000000000000000000000000000000000000000000000000000000000000000000000ffff 0x86dd000000000000110000000000000000000000000000000000000000000000000000000000000000000000076c";
 
 
 #if defined(SOFTAP)
@@ -7934,6 +7962,11 @@ int net_os_rxfilter_add_remove(struct net_device *dev, int add_remove, int num)
 		return ret;
 	if (num >= dhd->pub.pktfilter_count)
 		return -EINVAL;
+	/* These are "pass this to the host too" exceptions for forward-on-match mode. In
+	 * discard-on-match mode they would discard broadcast/multicast instead, so ignore them.
+	 */
+	if (!dhd_master_mode)
+		return ret;
 	switch (num) {
 		case DHD_BROADCAST_FILTER_NUM:
 			filterp = "101 0 0 0 0xFFFFFFFFFFFF 0xFFFFFFFFFFFF";

@@ -2001,7 +2001,7 @@ dhd_pktfilter_offload_set(dhd_pub_t * dhd, char *arg)
 	rc = rc >= 0 ? 0 : rc;
 
 	if (rc)
-		DHD_TRACE(("%s: failed to add pktfilter %s, retcode = %d\n",
+		DHD_ERROR(("%s: failed to add pktfilter %s, retcode = %d\n",
 		__FUNCTION__, arg, rc));
 	else
 		DHD_TRACE(("%s: successfully added pktfilter %s\n",

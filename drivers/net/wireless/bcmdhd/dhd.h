@@ -774,6 +774,10 @@ extern int dhd_keep_alive_onoff(dhd_pub_t *dhd);
 #define DHD_MULTICAST6_FILTER_NUM	3
 #define DHD_MDNS_FILTER_NUM		4
 #define DHD_ARP_FILTER_NUM		5
+#define DHD_MDNS4_DROP_FILTER_NUM	6
+#define DHD_MDNS6_DROP_FILTER_NUM	7
+#define DHD_SSDP4_DROP_FILTER_NUM	8
+#define DHD_SSDP6_DROP_FILTER_NUM	9
 extern int 	dhd_os_enable_packet_filter(dhd_pub_t *dhdp, int val);
 extern void dhd_enable_packet_filter(int value, dhd_pub_t *dhd);
 extern int net_os_enable_packet_filter(struct net_device *dev, int val);
